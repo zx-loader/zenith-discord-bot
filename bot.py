@@ -405,11 +405,11 @@ class PanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="🔑 Redeem Key", style=discord.ButtonStyle.success, custom_id="panel_redeem")
+    @discord.ui.button(label="🔑 Redeem Key", style=discord.ButtonStyle.secondary, custom_id="panel_redeem")
     async def redeem_key(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(RedeemKeyModal(then_send_script=False))
 
-    @discord.ui.button(label="📜 Get Script", style=discord.ButtonStyle.primary, custom_id="panel_getscript")
+    @discord.ui.button(label="📜 Get Script", style=discord.ButtonStyle.secondary, custom_id="panel_getscript")
     async def get_script(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = str(interaction.user.id)
         existing_key = redeemed_data.get(user_id)
@@ -434,7 +434,7 @@ class PanelView(discord.ui.View):
     async def reset_hwid(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ResetHWIDModal())
 
-    @discord.ui.button(label="💰 ซื้อ Key", style=discord.ButtonStyle.danger, custom_id="panel_buykey", row=1)
+    @discord.ui.button(label="💎 ซื้อ Key", style=discord.ButtonStyle.primary, custom_id="panel_buykey", row=1)
     async def buy_key(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title="💎 ซื้อ Key — Zenith Soul HUB",
@@ -461,7 +461,11 @@ def is_admin():
 @bot.tree.command(name="panel", description="Show the Zenith Soul HUB key panel")
 @is_admin()
 async def panel(interaction: discord.Interaction):
-    embed = discord.Embed(description="สามารถซื้อได้ที่ห้อง 🎫 ทิคเก็ต เลยครับ")
+    embed = discord.Embed(
+        title="⚡ ZENITH SOUL HUB",
+        description="**Premium Key Script — Zenith**",
+        color=discord.Color.from_rgb(20, 20, 20),
+    )
     embed.set_image(url="attachment://banner.png")
     # NOTE: if you don't have a local banner file, remove set_image line above
     # and instead use embed.set_image(url="<your image URL>")
