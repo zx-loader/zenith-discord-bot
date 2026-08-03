@@ -130,7 +130,7 @@ async def redeem_truemoney_voucher(voucher_url_or_code: str):
 
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(url, json=payload, timeout=10) as resp:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 status = resp.status
                 try:
                     body = await resp.json()
@@ -147,7 +147,10 @@ async def redeem_truemoney_voucher(voucher_url_or_code: str):
                     else:
                         return False, status_data.get("message", "Unknown error")
                 else:
-                    return False, str(body)
+                    return False, f"HTTP {status}: {str(body)[:200]}"
+        except aiohttp.ClientTimeout:
+            print("[TrueMoney redeem] TIMEOUT")
+            return False, "หมดเวลาเชื่อมต่อ TrueMoney กรุณาลองใหม่"
         except Exception as e:
             print(f"[TrueMoney redeem] EXCEPTION: {e}")
             return False, str(e)
@@ -285,21 +288,31 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
         )
 
 
+class BuyPackageSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label=f"{p['label']} — {p['price']} บาท",
+                description=f"รับคีย์ใช้งาน {p['label']}",
+                emoji="🔑",
+                value=key,
+            )
+            for key, p in PACKAGES.items()
+        ]
+        super().__init__(
+            placeholder="เลือกแพ็คเกจที่ต้องการซื้อ...",
+            options=options,
+            custom_id="buy_package_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(BuyKeyModal(self.values[0]))
+
+
 class BuyPackageView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
-
-    @discord.ui.button(label="3 วัน - 10฿", style=discord.ButtonStyle.secondary)
-    async def buy_3day(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(BuyKeyModal("3day"))
-
-    @discord.ui.button(label="15 วัน - 25฿", style=discord.ButtonStyle.secondary)
-    async def buy_15day(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(BuyKeyModal("15day"))
-
-    @discord.ui.button(label="ถาวร - 40฿", style=discord.ButtonStyle.secondary)
-    async def buy_lifetime(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(BuyKeyModal("lifetime"))
+        self.add_item(BuyPackageSelect())
 
 
 class ResetHWIDModal(discord.ui.Modal, title="Reset HWID"):
@@ -355,14 +368,16 @@ class PanelView(discord.ui.View):
     async def reset_hwid(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ResetHWIDModal())
 
-    @discord.ui.button(label="💰 ซื้อ Key", style=discord.ButtonStyle.success, custom_id="panel_buykey", row=1)
+    @discord.ui.button(label="💰 ซื้อ Key", style=discord.ButtonStyle.danger, custom_id="panel_buykey", row=1)
     async def buy_key(self, interaction: discord.Interaction, button: discord.ui.Button):
-        text = "\n".join(f"• {p['label']} — {p['price']} บาท" for p in PACKAGES.values())
-        await interaction.response.send_message(
-            f"เลือกแพ็คเกจที่ต้องการ:\n{text}\n\nกดปุ่มด้านล่างแล้วส่งลิงก์ซองอั่งเปา TrueMoney",
-            view=BuyPackageView(),
-            ephemeral=True,
+        embed = discord.Embed(
+            title="💎 ซื้อ Key — Zenith Soul HUB",
+            description="เลือกแพ็คเกจที่ต้องการจากเมนูด้านล่าง แล้วเตรียมลิงก์ซองอั่งเปา TrueMoney ให้พร้อม",
+            color=discord.Color.gold(),
         )
+        for p in PACKAGES.values():
+            embed.add_field(name=p["label"], value=f"{p['price']} บาท", inline=True)
+        await interaction.response.send_message(embed=embed, view=BuyPackageView(), ephemeral=True)
 
 
 # ---------- SLASH COMMANDS ----------
