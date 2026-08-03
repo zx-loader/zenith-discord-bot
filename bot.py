@@ -10,6 +10,10 @@ DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 PANDA_API_KEY = os.environ["PANDA_API_KEY"]
 PANDA_SERVICE = "zenithhub"
 TRUEMONEY_PHONE = os.environ["TRUEMONEY_PHONE"]
+GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+GITHUB_OWNER = "zx-loader"
+GITHUB_KEYPOOL_REPO = "zenith-keypool"
+GITHUB_KEYPOOL_FILE = "keypool.json"
 
 # Packages: label -> (days, price in baht). days=None means permanent/lifetime.
 PACKAGES = {
@@ -190,47 +194,79 @@ async def panda_create_key(days):
     return False, "Not used — using local key pool instead"
 
 
-def get_key_from_pool(package_key: str):
-    """
-    Pop one key from the pre-stocked pool for this package.
-    Pool is stored in a Railway Variable like KEYPOOL_3DAY, KEYPOOL_15DAY, KEYPOOL_LIFETIME
-    as a comma-separated list of keys.
-    Returns the key string, or None if pool is empty.
-    """
-    env_name = {
-        "3day": "KEYPOOL_3DAY",
-        "15day": "KEYPOOL_15DAY",
-        "lifetime": "KEYPOOL_LIFETIME",
-    }[package_key]
+GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_KEYPOOL_REPO}/contents/{GITHUB_KEYPOOL_FILE}"
 
-    raw = os.environ.get(env_name, "")
-    keys = [k.strip() for k in raw.split(",") if k.strip()]
 
+async def github_get_keypool():
+    """
+    Fetch keypool.json from GitHub.
+    Expected format: {"3day": ["KEY1", "KEY2"], "15day": [...], "lifetime": [...]}
+    Returns (pool_dict, sha) where sha is needed to update the file later.
+    """
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(GITHUB_API_BASE, headers=headers, timeout=10) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                print(f"[GitHub get keypool] status={resp.status} body={text}")
+                return {}, None
+
+            body = await resp.json()
+            sha = body["sha"]
+            import base64
+            content = base64.b64decode(body["content"]).decode("utf-8")
+            pool = json.loads(content)
+            return pool, sha
+
+
+async def github_update_keypool(pool: dict, sha: str):
+    """
+    Push the updated keypool.json back to GitHub, overwriting the old one.
+    """
+    import base64
+    new_content = base64.b64encode(json.dumps(pool, indent=2).encode("utf-8")).decode("utf-8")
+
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+    payload = {
+        "message": "Update keypool (key sold)",
+        "content": new_content,
+        "sha": sha,
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.put(GITHUB_API_BASE, headers=headers, json=payload, timeout=10) as resp:
+            status = resp.status
+            body = await resp.text()
+            print(f"[GitHub update keypool] status={status} body={body[:300]}")
+            return status == 200
+
+
+async def get_key_from_pool(package_key: str):
+    """
+    Pop one key from the GitHub-hosted pool for this package.
+    Returns the key string, or None if pool is empty / on error.
+    """
+    pool, sha = await github_get_keypool()
+    if sha is None:
+        return None
+
+    keys = pool.get(package_key, [])
     if not keys:
         return None
 
     chosen = keys[0]
-    remaining = keys[1:]
+    pool[package_key] = keys[1:]
 
-    # Persist the updated pool to a local file (Railway env vars can't be
-    # changed at runtime, so we track "used" keys in a local file instead)
-    used_file = "used_keys.json"
-    used = {}
-    if os.path.exists(used_file):
-        with open(used_file, "r") as f:
-            used = json.load(f)
-    used_list = used.get(package_key, [])
+    success = await github_update_keypool(pool, sha)
+    if not success:
+        return None
 
-    # find first key not already marked used
-    for k in keys:
-        if k not in used_list:
-            used_list.append(k)
-            used[package_key] = used_list
-            with open(used_file, "w") as f:
-                json.dump(used, f)
-            return k
-
-    return None
+    return chosen
 
 
 # ---------- MODALS ----------
@@ -301,7 +337,7 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
             )
             return
 
-        key_result = get_key_from_pool(self.package_key)
+        key_result = await get_key_from_pool(self.package_key)
         if not key_result:
             await interaction.followup.send(
                 f"⚠️ รับเงินสำเร็จ ({amount:.2f} บาท) แต่ตอนนี้คีย์แพ็คเกจ {pkg['label']} หมดคลังชั่วคราว\n"
