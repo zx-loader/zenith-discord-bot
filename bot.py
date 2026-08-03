@@ -9,6 +9,14 @@ import aiohttp
 DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 PANDA_API_KEY = os.environ["PANDA_API_KEY"]
 PANDA_SERVICE = "zenithhub"
+TRUEMONEY_PHONE = os.environ["TRUEMONEY_PHONE"]
+
+# Packages: label -> (days, price in baht). days=None means permanent/lifetime.
+PACKAGES = {
+    "3day": {"label": "3 วัน", "days": 3, "price": 10},
+    "15day": {"label": "15 วัน", "days": 15, "price": 25},
+    "lifetime": {"label": "ถาวร", "days": None, "price": 40},
+}
 
 # Allowed admins for /panel and /editpanel
 ADMIN_IDS = {
@@ -107,6 +115,91 @@ async def panda_reset_hwid(key: str):
             return False, str(e)
 
 
+async def redeem_truemoney_voucher(voucher_url_or_code: str):
+    """
+    Redeem a TrueMoney angpao voucher into our shop's wallet.
+    Returns (True, amount_baht) on success, (False, error_message) on failure.
+    """
+    # Extract voucher hash if a full URL was given
+    code = voucher_url_or_code.strip()
+    if "v=" in code:
+        code = code.split("v=")[-1].split("&")[0]
+
+    url = f"https://gift.truemoney.com/campaign/vouchers/{code}/redeem"
+    payload = {"mobile": TRUEMONEY_PHONE}
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, json=payload, timeout=10) as resp:
+                status = resp.status
+                try:
+                    body = await resp.json()
+                except Exception:
+                    body = await resp.text()
+
+                print(f"[TrueMoney redeem] status={status} body={body}")
+
+                if status == 200 and isinstance(body, dict):
+                    status_data = body.get("status", {})
+                    if status_data.get("code") == "SUCCESS":
+                        amount = float(body["data"]["my_ticket"]["amount_baht"])
+                        return True, amount
+                    else:
+                        return False, status_data.get("message", "Unknown error")
+                else:
+                    return False, str(body)
+        except Exception as e:
+            print(f"[TrueMoney redeem] EXCEPTION: {e}")
+            return False, str(e)
+
+
+async def panda_create_key(days):
+    """
+    Create a new key via Panda API.
+    days=None means lifetime/permanent (no expiration).
+    Returns (True, key_string) on success, (False, error) on failure.
+    """
+    url = "https://api.pandauth.com/v2/keys/generate"
+    headers = {
+        "Authorization": f"Bearer {PANDA_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {"service": PANDA_SERVICE, "amount": 1}
+    if days is not None:
+        payload["expiration_days"] = days
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, headers=headers, json=payload, timeout=10) as resp:
+                status = resp.status
+                try:
+                    body = await resp.json()
+                except Exception:
+                    body = await resp.text()
+
+                print(f"[Panda create key] status={status} body={body}")
+
+                if status == 200 and isinstance(body, dict):
+                    # try a couple of likely response shapes
+                    key = None
+                    if "key" in body:
+                        key = body["key"]
+                    elif "keys" in body and isinstance(body["keys"], list) and body["keys"]:
+                        key = body["keys"][0]
+                    elif "data" in body and isinstance(body["data"], dict):
+                        key = body["data"].get("key")
+
+                    if key:
+                        return True, key
+                    else:
+                        return False, f"Unexpected response shape: {body}"
+                else:
+                    return False, str(body)
+        except Exception as e:
+            print(f"[Panda create key] EXCEPTION: {e}")
+            return False, str(e)
+
+
 # ---------- MODALS ----------
 class RedeemKeyModal(discord.ui.Modal, title="Redeem Your Key"):
     key_input = discord.ui.TextInput(
@@ -140,6 +233,73 @@ class RedeemKeyModal(discord.ui.Modal, title="Redeem Your Key"):
             )
         else:
             await interaction.response.send_message("✅ Redeem สำเร็จ", ephemeral=True)
+
+
+class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
+    voucher_input = discord.ui.TextInput(
+        label="ลิงก์ซองอั่งเปา TrueMoney",
+        placeholder="https://gift.truemoney.com/campaign/?v=xxxxxxxx",
+        required=True,
+    )
+
+    def __init__(self, package_key: str):
+        super().__init__()
+        self.package_key = package_key
+
+    async def on_submit(self, interaction: discord.Interaction):
+        pkg = PACKAGES[self.package_key]
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        voucher = self.voucher_input.value.strip()
+        success, result = await redeem_truemoney_voucher(voucher)
+
+        if not success:
+            await interaction.followup.send(
+                f"❌ ไม่สามารถใช้ซองนี้ได้\n(debug: `{result}`)", ephemeral=True
+            )
+            return
+
+        amount = result  # baht received
+        if amount < pkg["price"]:
+            await interaction.followup.send(
+                f"❌ ยอดเงินไม่พอ ({amount:.2f} บาท) แพ็คเกจ {pkg['label']} ราคา {pkg['price']} บาท\n"
+                f"⚠️ ระบบรับเงินเข้าร้านแล้ว กรุณาติดต่อแอดมินเพื่อขอเงินคืนส่วนต่างหรือรับคีย์แบบสั้นลง",
+                ephemeral=True,
+            )
+            return
+
+        key_success, key_result = await panda_create_key(pkg["days"])
+        if not key_success:
+            await interaction.followup.send(
+                f"⚠️ รับเงินสำเร็จ ({amount:.2f} บาท) แต่สร้างคีย์อัตโนมัติไม่สำเร็จ\n"
+                f"กรุณาติดต่อแอดมินพร้อมแจ้งยอดนี้เพื่อรับคีย์\n(debug: `{key_result}`)",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            f"✅ ซื้อสำเร็จ! แพ็คเกจ {pkg['label']}\n\n"
+            f"🔑 Key ของคุณ:\n`{key_result}`\n\n"
+            f"ใช้ปุ่ม Redeem Key เพื่อผูกคีย์นี้กับเครื่องของคุณ",
+            ephemeral=True,
+        )
+
+
+class BuyPackageView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+
+    @discord.ui.button(label="3 วัน - 10฿", style=discord.ButtonStyle.secondary)
+    async def buy_3day(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BuyKeyModal("3day"))
+
+    @discord.ui.button(label="15 วัน - 25฿", style=discord.ButtonStyle.secondary)
+    async def buy_15day(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BuyKeyModal("15day"))
+
+    @discord.ui.button(label="ถาวร - 40฿", style=discord.ButtonStyle.secondary)
+    async def buy_lifetime(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BuyKeyModal("lifetime"))
 
 
 class ResetHWIDModal(discord.ui.Modal, title="Reset HWID"):
@@ -194,6 +354,15 @@ class PanelView(discord.ui.View):
     @discord.ui.button(label="🔄 Reset HWID", style=discord.ButtonStyle.secondary, custom_id="panel_resethwid")
     async def reset_hwid(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ResetHWIDModal())
+
+    @discord.ui.button(label="💰 ซื้อ Key", style=discord.ButtonStyle.success, custom_id="panel_buykey", row=1)
+    async def buy_key(self, interaction: discord.Interaction, button: discord.ui.Button):
+        text = "\n".join(f"• {p['label']} — {p['price']} บาท" for p in PACKAGES.values())
+        await interaction.response.send_message(
+            f"เลือกแพ็คเกจที่ต้องการ:\n{text}\n\nกดปุ่มด้านล่างแล้วส่งลิงก์ซองอั่งเปา TrueMoney",
+            view=BuyPackageView(),
+            ephemeral=True,
+        )
 
 
 # ---------- SLASH COMMANDS ----------
