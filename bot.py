@@ -45,8 +45,27 @@ def save_data(data):
 
 redeemed_data = load_data()
 
+WELCOME_FILE = "welcome_config.json"
+DEV_ID = 1077542254677344366
+
+
+def load_welcome_config():
+    if os.path.exists(WELCOME_FILE):
+        with open(WELCOME_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_welcome_config(cfg):
+    with open(WELCOME_FILE, "w") as f:
+        json.dump(cfg, f)
+
+
+welcome_config = load_welcome_config()
+
 # ---------- DISCORD BOT SETUP ----------
 intents = discord.Intents.default()
+intents.members = True  # required for on_member_join welcome messages
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
@@ -165,49 +184,53 @@ async def redeem_truemoney_voucher(voucher_url_or_code: str):
 
 async def panda_create_key(days):
     """
-    Create a new key via Panda API.
-    days=None means lifetime/permanent (no expiration).
-    Returns (True, key_string) on success, (False, error) on failure.
+    DEPRECATED — Panda doesn't expose a public API for this.
+    Kept as a no-op fallback, not used anymore.
     """
-    url = "https://api.pandauth.com/v2/keys/generate"
-    headers = {
-        "Authorization": f"Bearer {PANDA_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {"service": PANDA_SERVICE, "amount": 1}
-    if days is not None:
-        payload["expiration_days"] = days
+    return False, "Not used — using local key pool instead"
 
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(url, headers=headers, json=payload, timeout=10) as resp:
-                status = resp.status
-                try:
-                    body = await resp.json()
-                except Exception:
-                    body = await resp.text()
 
-                print(f"[Panda create key] status={status} body={body}")
+def get_key_from_pool(package_key: str):
+    """
+    Pop one key from the pre-stocked pool for this package.
+    Pool is stored in a Railway Variable like KEYPOOL_3DAY, KEYPOOL_15DAY, KEYPOOL_LIFETIME
+    as a comma-separated list of keys.
+    Returns the key string, or None if pool is empty.
+    """
+    env_name = {
+        "3day": "KEYPOOL_3DAY",
+        "15day": "KEYPOOL_15DAY",
+        "lifetime": "KEYPOOL_LIFETIME",
+    }[package_key]
 
-                if status == 200 and isinstance(body, dict):
-                    # try a couple of likely response shapes
-                    key = None
-                    if "key" in body:
-                        key = body["key"]
-                    elif "keys" in body and isinstance(body["keys"], list) and body["keys"]:
-                        key = body["keys"][0]
-                    elif "data" in body and isinstance(body["data"], dict):
-                        key = body["data"].get("key")
+    raw = os.environ.get(env_name, "")
+    keys = [k.strip() for k in raw.split(",") if k.strip()]
 
-                    if key:
-                        return True, key
-                    else:
-                        return False, f"Unexpected response shape: {body}"
-                else:
-                    return False, str(body)
-        except Exception as e:
-            print(f"[Panda create key] EXCEPTION: {e}")
-            return False, str(e)
+    if not keys:
+        return None
+
+    chosen = keys[0]
+    remaining = keys[1:]
+
+    # Persist the updated pool to a local file (Railway env vars can't be
+    # changed at runtime, so we track "used" keys in a local file instead)
+    used_file = "used_keys.json"
+    used = {}
+    if os.path.exists(used_file):
+        with open(used_file, "r") as f:
+            used = json.load(f)
+    used_list = used.get(package_key, [])
+
+    # find first key not already marked used
+    for k in keys:
+        if k not in used_list:
+            used_list.append(k)
+            used[package_key] = used_list
+            with open(used_file, "w") as f:
+                json.dump(used, f)
+            return k
+
+    return None
 
 
 # ---------- MODALS ----------
@@ -278,11 +301,11 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
             )
             return
 
-        key_success, key_result = await panda_create_key(pkg["days"])
-        if not key_success:
+        key_result = get_key_from_pool(self.package_key)
+        if not key_result:
             await interaction.followup.send(
-                f"⚠️ รับเงินสำเร็จ ({amount:.2f} บาท) แต่สร้างคีย์อัตโนมัติไม่สำเร็จ\n"
-                f"กรุณาติดต่อแอดมินพร้อมแจ้งยอดนี้เพื่อรับคีย์\n(debug: `{key_result}`)",
+                f"⚠️ รับเงินสำเร็จ ({amount:.2f} บาท) แต่ตอนนี้คีย์แพ็คเกจ {pkg['label']} หมดคลังชั่วคราว\n"
+                f"กรุณาติดต่อแอดมินพร้อมแจ้งยอดนี้เพื่อรับคีย์",
                 ephemeral=True,
             )
             return
@@ -431,6 +454,47 @@ async def editpanel(interaction: discord.Interaction, text: str, image_url: str 
         await interaction.response.send_message(
             "❌ ไม่พบ panel message ในช่องนี้ (ลองรัน /panel ก่อน)", ephemeral=True
         )
+
+
+@bot.tree.command(name="setwelcome", description="ตั้งค่าห้องสำหรับส่งข้อความต้อนรับสมาชิกใหม่")
+async def setwelcome(interaction: discord.Interaction):
+    if interaction.user.id != DEV_ID:
+        await interaction.response.send_message(
+            "You don't have permission to use this command.", ephemeral=True
+        )
+        return
+
+    welcome_config[str(interaction.guild.id)] = interaction.channel.id
+    save_welcome_config(welcome_config)
+
+    await interaction.response.send_message(
+        f"✅ ตั้งค่าแล้ว จะส่งข้อความต้อนรับสมาชิกใหม่ในห้องนี้ ({interaction.channel.mention})",
+        ephemeral=True,
+    )
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    channel_id = welcome_config.get(str(member.guild.id))
+    if not channel_id:
+        return
+
+    channel = member.guild.get_channel(channel_id)
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title="👋 Welcome to Zenith Hub",
+        description=f"ยินดีต้อนรับ {member.mention} เข้าสู่ Zenith Soul HUB!",
+        color=discord.Color.blurple(),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text=f"สมาชิกคนที่ {member.guild.member_count}")
+
+    try:
+        await channel.send(embed=embed)
+    except Exception as e:
+        print(f"[Welcome] failed to send: {e}")
 
 
 # ---------- STARTUP ----------
