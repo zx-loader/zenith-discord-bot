@@ -492,6 +492,37 @@ async def editpanel(interaction: discord.Interaction, text: str, image_url: str 
         )
 
 
+@bot.tree.command(name="testkeypool", description="[Admin only] Test pulling a key from the pool, skipping payment")
+@app_commands.describe(package="Which package to test")
+@app_commands.choices(package=[
+    app_commands.Choice(name="3 วัน", value="3day"),
+    app_commands.Choice(name="15 วัน", value="15day"),
+    app_commands.Choice(name="ถาวร", value="lifetime"),
+])
+async def testkeypool(interaction: discord.Interaction, package: app_commands.Choice[str]):
+    if interaction.user.id not in ADMIN_IDS:
+        await interaction.response.send_message(
+            "You don't have permission to use this command.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    key_result = await get_key_from_pool(package.value)
+
+    if not key_result:
+        await interaction.followup.send(
+            f"❌ คลัง key แพ็คเกจ {package.name} ว่างเปล่า หรือดึงจาก GitHub ไม่สำเร็จ (เช็ค logs)",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.followup.send(
+        f"✅ ทดสอบสำเร็จ! ดึง key จากคลัง {package.name} ได้:\n`{key_result}`\n\n"
+        f"(ลองเข้าไปดู repo zenith-keypool ว่า key นี้ถูกลบออกจากไฟล์แล้วหรือยัง)",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="setwelcome", description="ตั้งค่าห้องสำหรับส่งข้อความต้อนรับสมาชิกใหม่")
 async def setwelcome(interaction: discord.Interaction):
     if interaction.user.id != DEV_ID:
