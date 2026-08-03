@@ -127,10 +127,17 @@ async def redeem_truemoney_voucher(voucher_url_or_code: str):
 
     url = f"https://gift.truemoney.com/campaign/vouchers/{code}/redeem"
     payload = {"mobile": TRUEMONEY_PHONE}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://gift.truemoney.com/campaign/",
+        "Origin": "https://gift.truemoney.com",
+    }
 
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 status = resp.status
                 try:
                     body = await resp.json()
