@@ -299,8 +299,19 @@ async def github_get_json(filename: str):
             body = await resp.json()
             sha = body["sha"]
             import base64
-            content = base64.b64decode(body["content"]).decode("utf-8")
-            data = json.loads(content)
+            content = base64.b64decode(body["content"]).decode("utf-8").strip()
+
+            if not content:
+                # File exists but is empty (0 bytes) — treat as empty dict
+                print(f"[GitHub get {filename}] file is empty, treating as {{}}")
+                return {}, sha
+
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError as e:
+                print(f"[GitHub get {filename}] JSON parse error: {e}, content was: {content[:200]!r}")
+                return {}, sha
+
             return data, sha
 
 
@@ -726,6 +737,23 @@ async def testbuy(interaction: discord.Interaction):
     await interaction.response.send_message(
         "🧪 โหมดทดสอบ — เลือกแพ็คเกจ แล้วใส่ข้อความอะไรก็ได้ในช่องซอง (ไม่เช็คจริง)",
         view=TestBuyPackageView(),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="เทสคน", description="[Admin only] จำลองคนเข้าเซิร์ฟเวอร์ใหม่ เพื่อทดสอบข้อความต้อนรับ")
+async def test_member_join(interaction: discord.Interaction):
+    if interaction.user.id not in ADMIN_IDS:
+        await interaction.response.send_message(
+            "You don't have permission to use this command.", ephemeral=True
+        )
+        return
+
+    # Simulate on_member_join using the admin's own member object
+    await on_member_join(interaction.user)
+
+    await interaction.response.send_message(
+        "🧪 จำลองส่งข้อความต้อนรับแล้ว เช็คในห้อง welce ดูครับ",
         ephemeral=True,
     )
 
