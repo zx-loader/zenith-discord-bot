@@ -33,6 +33,7 @@ ADMIN_IDS = {
 SCRIPT_LINK = f"https://ads.pandauth.com/getkey/{PANDA_SERVICE}"
 
 PREMIUM_ROLE_NAME = "Premium"
+AUTO_PANEL_CHANNEL_NAME = "premium"  # channel where /panel auto-posts/updates on bot startup
 
 # Simple local storage: which discord user redeemed which key
 DATA_FILE = "redeemed_keys.json"
@@ -390,35 +391,43 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
     voucher_input = discord.ui.TextInput(
         label="ลิงก์ซองอั่งเปา TrueMoney",
         placeholder="https://gift.truemoney.com/campaign/?v=xxxxxxxx",
-        required=True,
+        required=False,
     )
 
-    def __init__(self, package_key: str):
+    def __init__(self, package_key: str, skip_payment: bool = False):
         super().__init__()
         self.package_key = package_key
+        self.skip_payment = skip_payment
+        if skip_payment:
+            self.voucher_input.label = "[TEST MODE] ใส่อะไรก็ได้ (ไม่เช็คจริง)"
+            self.voucher_input.required = False
 
     async def on_submit(self, interaction: discord.Interaction):
         pkg = PACKAGES[self.package_key]
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
-            voucher = self.voucher_input.value.strip()
-            success, result = await redeem_truemoney_voucher(voucher)
+            if self.skip_payment:
+                amount = pkg["price"]  # pretend full payment was received
+            else:
+                voucher = self.voucher_input.value.strip()
+                success, result = await redeem_truemoney_voucher(voucher)
 
-            if not success:
-                await interaction.followup.send(
-                    f"❌ ไม่สามารถใช้ซองนี้ได้\n(debug: `{result}`)", ephemeral=True
-                )
-                return
+                if not success:
+                    await interaction.followup.send(
+                        "❌ รับซองไม่สำเร็จ โปรดตรวจสอบซองของท่านและลองใหม่อีกครั้ง",
+                        ephemeral=True,
+                    )
+                    return
 
-            amount = result  # baht received
-            if amount < pkg["price"]:
-                await interaction.followup.send(
-                    f"❌ ยอดเงินไม่พอ ({amount:.2f} บาท) แพ็คเกจ {pkg['label']} ราคา {pkg['price']} บาท\n"
-                    f"⚠️ ระบบรับเงินเข้าร้านแล้ว กรุณาติดต่อแอดมินเพื่อขอเงินคืนส่วนต่างหรือรับคีย์แบบสั้นลง",
-                    ephemeral=True,
-                )
-                return
+                amount = result  # baht received
+                if amount < pkg["price"]:
+                    await interaction.followup.send(
+                        "❌ รับซองไม่สำเร็จ โปรดตรวจสอบซองของท่านและลองใหม่อีกครั้ง\n"
+                        f"⚠️ ระบบรับเงินเข้าร้านแล้ว ({amount:.2f} บาท) กรุณาติดต่อแอดมินเพื่อขอเงินคืนส่วนต่างหรือรับคีย์แบบสั้นลง",
+                        ephemeral=True,
+                    )
+                    return
 
             key_result = await get_key_from_pool(self.package_key)
             if not key_result:
@@ -444,11 +453,16 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
             else:
                 role_msg = f"\n⚠️ ไม่พบ role ชื่อ '{PREMIUM_ROLE_NAME}' ในเซิร์ฟเวอร์"
 
+            purchased_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+            test_tag = "\n🧪 (โหมดทดสอบ ไม่มีการตัดเงินจริง)" if self.skip_payment else ""
+
             await interaction.followup.send(
-                f"✅ ซื้อสำเร็จ! แพ็คเกจ {pkg['label']}\n\n"
-                f"🔑 Key ของคุณ:\n`{key_result}`\n\n"
+                f"✅ สำเร็จเรียบร้อย\n\n"
+                f"🔑 คีย์: `{key_result}`\n"
+                f"🕒 เวลาที่ซื้อ: {purchased_at}\n"
+                f"📦 แพ็คเกจ: {pkg['label']}\n\n"
                 f"ใช้ปุ่ม Redeem Key เพื่อผูกคีย์นี้กับเครื่องของคุณ"
-                f"{role_msg}",
+                f"{role_msg}{test_tag}",
                 ephemeral=True,
             )
         except Exception as e:
@@ -484,6 +498,33 @@ class BuyPackageView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
         self.add_item(BuyPackageSelect())
+
+
+class TestBuyPackageSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label=f"{p['label']} — {p['price']} บาท",
+                description=f"[TEST] จำลองซื้อ {p['label']} ไม่มีการตัดเงินจริง",
+                emoji="🧪",
+                value=key,
+            )
+            for key, p in PACKAGES.items()
+        ]
+        super().__init__(
+            placeholder="[TEST MODE] เลือกแพ็คเกจที่ต้องการจำลอง...",
+            options=options,
+            custom_id="test_buy_package_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(BuyKeyModal(self.values[0], skip_payment=True))
+
+
+class TestBuyPackageView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+        self.add_item(TestBuyPackageSelect())
 
 
 class ResetHWIDModal(discord.ui.Modal, title="Reset HWID"):
@@ -561,15 +602,50 @@ def is_admin():
     return app_commands.check(predicate)
 
 
-@bot.tree.command(name="panel", description="Show the Zenith Soul HUB key panel")
-@is_admin()
-async def panel(interaction: discord.Interaction):
+def build_panel_embed() -> discord.Embed:
     embed = discord.Embed(
         title="⚡ ZENITH SOUL HUB",
         description="**Premium Key Script — Zenith**",
         color=discord.Color.from_rgb(20, 20, 20),
     )
     embed.set_image(url="attachment://banner.png")
+    return embed
+
+
+async def ensure_panel_posted():
+    """
+    Runs on bot startup. Looks for a channel named AUTO_PANEL_CHANNEL_NAME in every
+    guild the bot is in. If the bot's own panel message already exists there, leave
+    it (buttons are already persistent via add_view). If not, post a fresh one.
+    """
+    for guild in bot.guilds:
+        channel = discord.utils.get(guild.text_channels, name=AUTO_PANEL_CHANNEL_NAME)
+        if not channel:
+            print(f"[AutoPanel] No channel named '{AUTO_PANEL_CHANNEL_NAME}' in {guild.name}")
+            continue
+
+        found_existing = False
+        async for msg in channel.history(limit=50):
+            if msg.author.id == bot.user.id and msg.components:
+                found_existing = True
+                break
+
+        if found_existing:
+            print(f"[AutoPanel] Panel already exists in #{channel.name}, leaving as is")
+            continue
+
+        try:
+            embed = build_panel_embed()
+            await channel.send(embed=embed, view=PanelView())
+            print(f"[AutoPanel] Posted new panel in #{channel.name}")
+        except Exception as e:
+            print(f"[AutoPanel] Failed to post panel: {e}")
+
+
+@bot.tree.command(name="panel", description="Show the Zenith Soul HUB key panel")
+@is_admin()
+async def panel(interaction: discord.Interaction):
+    embed = build_panel_embed()
     # NOTE: if you don't have a local banner file, remove set_image line above
     # and instead use embed.set_image(url="<your image URL>")
     await interaction.response.send_message(embed=embed, view=PanelView())
@@ -626,6 +702,21 @@ async def testkeypool(interaction: discord.Interaction, package: app_commands.Ch
     await interaction.followup.send(
         f"✅ ทดสอบสำเร็จ! ดึง key จากคลัง {package.name} ได้:\n`{key_result}`\n\n"
         f"(ลองเข้าไปดู repo zenith-keypool ว่า key นี้ถูกลบออกจากไฟล์แล้วหรือยัง)",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="testbuy", description="[Admin only] จำลองการซื้อ Key แบบเต็มระบบ ไม่ตัดเงินจริง")
+async def testbuy(interaction: discord.Interaction):
+    if interaction.user.id not in ADMIN_IDS:
+        await interaction.response.send_message(
+            "You don't have permission to use this command.", ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(
+        "🧪 โหมดทดสอบ — เลือกแพ็คเกจ แล้วใส่ข้อความอะไรก็ได้ในช่องซอง (ไม่เช็คจริง)",
+        view=TestBuyPackageView(),
         ephemeral=True,
     )
 
@@ -758,6 +849,8 @@ async def on_ready():
 
     if not check_expired_premiums.is_running():
         check_expired_premiums.start()
+
+    await ensure_panel_posted()
 
     print(f"Bot is online as {bot.user}")
 
