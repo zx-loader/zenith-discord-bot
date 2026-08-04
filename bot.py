@@ -1,8 +1,9 @@
 import os
 import json
+import datetime
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import aiohttp
 
 # ---------- CONFIG (from Railway Variables) ----------
@@ -31,6 +32,8 @@ ADMIN_IDS = {
 
 SCRIPT_LINK = f"https://ads.pandauth.com/getkey/{PANDA_SERVICE}"
 
+PREMIUM_ROLE_NAME = "Premium"
+
 # Simple local storage: which discord user redeemed which key
 DATA_FILE = "redeemed_keys.json"
 
@@ -48,6 +51,56 @@ def save_data(data):
 
 
 redeemed_data = load_data()
+
+# ---------- PREMIUM STATUS TRACKING ----------
+PURCHASES_FILE = "purchases.json"
+
+
+def load_purchases():
+    if os.path.exists(PURCHASES_FILE):
+        with open(PURCHASES_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_purchases(data):
+    with open(PURCHASES_FILE, "w") as f:
+        json.dump(data, f)
+
+
+purchases_data = load_purchases()
+
+
+def record_purchase(user_id: int, package_key: str, key: str):
+    """
+    Save purchase info: which key, which package, when it expires.
+    days=None (lifetime) -> expires_at = None
+    """
+    pkg = PACKAGES[package_key]
+    if pkg["days"] is not None:
+        expires_at = (
+            datetime.datetime.utcnow() + datetime.timedelta(days=pkg["days"])
+        ).isoformat()
+    else:
+        expires_at = None
+
+    purchases_data[str(user_id)] = {
+        "package": package_key,
+        "package_label": pkg["label"],
+        "key": key,
+        "expires_at": expires_at,
+        "purchased_at": datetime.datetime.utcnow().isoformat(),
+    }
+    save_purchases(purchases_data)
+
+
+def is_expired(purchase: dict) -> bool:
+    if purchase.get("expires_at") is None:
+        return False  # lifetime, never expires
+    expires_at = datetime.datetime.fromisoformat(purchase["expires_at"])
+    return datetime.datetime.utcnow() > expires_at
+
+
 
 WELCOME_FILE = "welcome_config.json"
 DEV_ID = 1077542254677344366
@@ -346,10 +399,25 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
             )
             return
 
+        # Record purchase + give Premium role
+        record_purchase(interaction.user.id, self.package_key, key_result)
+        role_msg = ""
+        premium_role = discord.utils.get(interaction.guild.roles, name=PREMIUM_ROLE_NAME)
+        if premium_role:
+            try:
+                await interaction.user.add_roles(premium_role, reason="Purchased key")
+                role_msg = f"\n🎖️ ได้รับยศ **{PREMIUM_ROLE_NAME}** แล้ว!"
+            except Exception as e:
+                print(f"[Role assign] failed: {e}")
+                role_msg = "\n⚠️ ให้ยศ Premium ไม่สำเร็จ (บอทอาจไม่มีสิทธิ์จัดการ role นี้)"
+        else:
+            role_msg = f"\n⚠️ ไม่พบ role ชื่อ '{PREMIUM_ROLE_NAME}' ในเซิร์ฟเวอร์"
+
         await interaction.followup.send(
             f"✅ ซื้อสำเร็จ! แพ็คเกจ {pkg['label']}\n\n"
             f"🔑 Key ของคุณ:\n`{key_result}`\n\n"
-            f"ใช้ปุ่ม Redeem Key เพื่อผูกคีย์นี้กับเครื่องของคุณ",
+            f"ใช้ปุ่ม Redeem Key เพื่อผูกคีย์นี้กับเครื่องของคุณ"
+            f"{role_msg}",
             ephemeral=True,
         )
 
@@ -568,6 +636,61 @@ async def on_member_join(member: discord.Member):
         print(f"[Welcome] failed to send: {e}")
 
 
+@bot.tree.command(name="status", description="ดูสถานะของคุณ (คีย์, วันหมดอายุ, ยศ Premium)")
+async def status(interaction: discord.Interaction):
+    purchase = purchases_data.get(str(interaction.user.id))
+
+    embed = discord.Embed(title="📊 สถานะของคุณ", color=discord.Color.from_str("#C0C0C0"))
+    embed.add_field(name="ชื่อผู้ใช้", value=interaction.user.mention, inline=False)
+
+    if not purchase:
+        embed.add_field(name="คีย์", value="ยังไม่มีการซื้อคีย์", inline=False)
+        embed.add_field(name="สถานะ Premium", value="❌ ไม่มี", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    expired = is_expired(purchase)
+    if purchase["expires_at"] is None:
+        expire_text = "ถาวร (ไม่มีวันหมดอายุ)"
+    else:
+        expire_dt = datetime.datetime.fromisoformat(purchase["expires_at"])
+        expire_text = expire_dt.strftime("%Y-%m-%d %H:%M UTC")
+        if expired:
+            expire_text += " (หมดอายุแล้ว)"
+
+    embed.add_field(name="แพ็คเกจ", value=purchase["package_label"], inline=True)
+    embed.add_field(name="คีย์", value=f"`{purchase['key']}`", inline=True)
+    embed.add_field(name="วันหมดอายุ", value=expire_text, inline=False)
+    embed.add_field(
+        name="สถานะ Premium",
+        value="✅ Active" if not expired else "❌ หมดอายุแล้ว",
+        inline=False,
+    )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tasks.loop(hours=24)
+async def check_expired_premiums():
+    """Runs once a day: removes Premium role from anyone whose key expired."""
+    for guild in bot.guilds:
+        premium_role = discord.utils.get(guild.roles, name=PREMIUM_ROLE_NAME)
+        if not premium_role:
+            continue
+
+        for user_id_str, purchase in list(purchases_data.items()):
+            if not is_expired(purchase):
+                continue
+
+            member = guild.get_member(int(user_id_str))
+            if member and premium_role in member.roles:
+                try:
+                    await member.remove_roles(premium_role, reason="Key expired")
+                    print(f"[Expiry check] Removed Premium from {member} (key expired)")
+                except Exception as e:
+                    print(f"[Expiry check] Failed to remove role from {user_id_str}: {e}")
+
+
 # ---------- STARTUP ----------
 @bot.event
 async def on_ready():
@@ -577,6 +700,10 @@ async def on_ready():
         print(f"Synced {len(synced)} command(s)")
     except Exception as e:
         print(f"Sync error: {e}")
+
+    if not check_expired_premiums.is_running():
+        check_expired_premiums.start()
+
     print(f"Bot is online as {bot.user}")
 
 
