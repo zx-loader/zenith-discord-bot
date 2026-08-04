@@ -401,54 +401,62 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
         pkg = PACKAGES[self.package_key]
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        voucher = self.voucher_input.value.strip()
-        success, result = await redeem_truemoney_voucher(voucher)
+        try:
+            voucher = self.voucher_input.value.strip()
+            success, result = await redeem_truemoney_voucher(voucher)
 
-        if not success:
-            await interaction.followup.send(
-                f"❌ ไม่สามารถใช้ซองนี้ได้\n(debug: `{result}`)", ephemeral=True
-            )
-            return
+            if not success:
+                await interaction.followup.send(
+                    f"❌ ไม่สามารถใช้ซองนี้ได้\n(debug: `{result}`)", ephemeral=True
+                )
+                return
 
-        amount = result  # baht received
-        if amount < pkg["price"]:
+            amount = result  # baht received
+            if amount < pkg["price"]:
+                await interaction.followup.send(
+                    f"❌ ยอดเงินไม่พอ ({amount:.2f} บาท) แพ็คเกจ {pkg['label']} ราคา {pkg['price']} บาท\n"
+                    f"⚠️ ระบบรับเงินเข้าร้านแล้ว กรุณาติดต่อแอดมินเพื่อขอเงินคืนส่วนต่างหรือรับคีย์แบบสั้นลง",
+                    ephemeral=True,
+                )
+                return
+
+            key_result = await get_key_from_pool(self.package_key)
+            if not key_result:
+                await interaction.followup.send(
+                    f"⚠️ รับเงินสำเร็จ ({amount:.2f} บาท) แต่ตอนนี้คีย์แพ็คเกจ {pkg['label']} หมดคลังชั่วคราว\n"
+                    f"กรุณาติดต่อแอดมินพร้อมแจ้งยอดนี้เพื่อรับคีย์",
+                    ephemeral=True,
+                )
+                return
+
+            # Record purchase + give Premium role
+            record_purchase(interaction.user.id, self.package_key, key_result)
+            mark_key_sold(key_result, interaction.user.id)
+            role_msg = ""
+            premium_role = discord.utils.get(interaction.guild.roles, name=PREMIUM_ROLE_NAME)
+            if premium_role:
+                try:
+                    await interaction.user.add_roles(premium_role, reason="Purchased key")
+                    role_msg = f"\n🎖️ ได้รับยศ **{PREMIUM_ROLE_NAME}** แล้ว!"
+                except Exception as e:
+                    print(f"[Role assign] failed: {e}")
+                    role_msg = "\n⚠️ ให้ยศ Premium ไม่สำเร็จ (บอทอาจไม่มีสิทธิ์จัดการ role นี้)"
+            else:
+                role_msg = f"\n⚠️ ไม่พบ role ชื่อ '{PREMIUM_ROLE_NAME}' ในเซิร์ฟเวอร์"
+
             await interaction.followup.send(
-                f"❌ ยอดเงินไม่พอ ({amount:.2f} บาท) แพ็คเกจ {pkg['label']} ราคา {pkg['price']} บาท\n"
-                f"⚠️ ระบบรับเงินเข้าร้านแล้ว กรุณาติดต่อแอดมินเพื่อขอเงินคืนส่วนต่างหรือรับคีย์แบบสั้นลง",
+                f"✅ ซื้อสำเร็จ! แพ็คเกจ {pkg['label']}\n\n"
+                f"🔑 Key ของคุณ:\n`{key_result}`\n\n"
+                f"ใช้ปุ่ม Redeem Key เพื่อผูกคีย์นี้กับเครื่องของคุณ"
+                f"{role_msg}",
                 ephemeral=True,
             )
-            return
-
-        key_result = await get_key_from_pool(self.package_key)
-        if not key_result:
+        except Exception as e:
+            print(f"[BuyKeyModal] UNEXPECTED ERROR: {e}")
             await interaction.followup.send(
-                f"⚠️ รับเงินสำเร็จ ({amount:.2f} บาท) แต่ตอนนี้คีย์แพ็คเกจ {pkg['label']} หมดคลังชั่วคราว\n"
-                f"กรุณาติดต่อแอดมินพร้อมแจ้งยอดนี้เพื่อรับคีย์",
+                f"❌ เกิดข้อผิดพลาดไม่คาดคิด กรุณาติดต่อแอดมิน\n(debug: `{e}`)",
                 ephemeral=True,
             )
-            return
-
-        # Record purchase + give Premium role
-        record_purchase(interaction.user.id, self.package_key, key_result)
-        role_msg = ""
-        premium_role = discord.utils.get(interaction.guild.roles, name=PREMIUM_ROLE_NAME)
-        if premium_role:
-            try:
-                await interaction.user.add_roles(premium_role, reason="Purchased key")
-                role_msg = f"\n🎖️ ได้รับยศ **{PREMIUM_ROLE_NAME}** แล้ว!"
-            except Exception as e:
-                print(f"[Role assign] failed: {e}")
-                role_msg = "\n⚠️ ให้ยศ Premium ไม่สำเร็จ (บอทอาจไม่มีสิทธิ์จัดการ role นี้)"
-        else:
-            role_msg = f"\n⚠️ ไม่พบ role ชื่อ '{PREMIUM_ROLE_NAME}' ในเซิร์ฟเวอร์"
-
-        await interaction.followup.send(
-            f"✅ ซื้อสำเร็จ! แพ็คเกจ {pkg['label']}\n\n"
-            f"🔑 Key ของคุณ:\n`{key_result}`\n\n"
-            f"ใช้ปุ่ม Redeem Key เพื่อผูกคีย์นี้กับเครื่องของคุณ"
-            f"{role_msg}",
-            ephemeral=True,
-        )
 
 
 class BuyPackageSelect(discord.ui.Select):
@@ -502,11 +510,11 @@ class PanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="🔑 Redeem Key", style=discord.ButtonStyle.secondary, custom_id="panel_redeem")
+    @discord.ui.button(label="🔑 Redeem Key", style=discord.ButtonStyle.success, custom_id="panel_redeem")
     async def redeem_key(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(RedeemKeyModal(then_send_script=False))
 
-    @discord.ui.button(label="📜 Get Script", style=discord.ButtonStyle.secondary, custom_id="panel_getscript")
+    @discord.ui.button(label="📜 Get Script", style=discord.ButtonStyle.primary, custom_id="panel_getscript")
     async def get_script(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = str(interaction.user.id)
         existing_key = redeemed_data.get(user_id)
@@ -524,7 +532,7 @@ class PanelView(discord.ui.View):
     async def reset_hwid(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ResetHWIDModal())
 
-    @discord.ui.button(label="💎 ซื้อ Key", style=discord.ButtonStyle.primary, custom_id="panel_buykey", row=1)
+    @discord.ui.button(label="💎 ซื้อ Key", style=discord.ButtonStyle.danger, custom_id="panel_buykey", row=1)
     async def buy_key(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title="💎 ซื้อ Key — Zenith Soul HUB",
@@ -641,12 +649,16 @@ async def setwelcome(interaction: discord.Interaction):
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    print(f"[Welcome] on_member_join fired for {member} in guild {member.guild.id}")
+
     channel_id = welcome_config.get(str(member.guild.id))
     if not channel_id:
+        print(f"[Welcome] No welcome channel configured for guild {member.guild.id}")
         return
 
     channel = member.guild.get_channel(channel_id)
     if not channel:
+        print(f"[Welcome] Configured channel {channel_id} not found")
         return
 
     embed = discord.Embed(
@@ -659,6 +671,7 @@ async def on_member_join(member: discord.Member):
 
     try:
         await channel.send(embed=embed)
+        print(f"[Welcome] Sent welcome message for {member}")
     except Exception as e:
         print(f"[Welcome] failed to send: {e}")
 
