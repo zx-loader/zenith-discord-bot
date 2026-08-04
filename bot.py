@@ -34,6 +34,7 @@ SCRIPT_LINK = f"https://ads.pandauth.com/getkey/{PANDA_SERVICE}"
 
 PREMIUM_ROLE_NAME = "Premium"
 AUTO_PANEL_CHANNEL_NAME = "premium"  # channel where /panel auto-posts/updates on bot startup
+WELCOME_CHANNEL_NAME = "welce"  # channel name (without emoji) where welcome messages are posted
 
 # Simple local storage: which discord user redeemed which key
 DATA_FILE = "redeemed_keys.json"
@@ -71,28 +72,40 @@ def save_purchases(data):
 
 purchases_data = load_purchases()
 
-# ---------- SOLD KEYS TRACKING ----------
+# ---------- SOLD KEYS TRACKING (stored on GitHub, same repo as keypool) ----------
 SOLD_KEYS_FILE = "sold_keys.json"
 
 
-def load_sold_keys():
-    if os.path.exists(SOLD_KEYS_FILE):
-        with open(SOLD_KEYS_FILE, "r") as f:
-            return json.load(f)
-    return {}  # {key: discord_user_id}
+async def mark_key_sold(key: str, user_id: int):
+    """
+    Record that this key was sold to this discord user, pushing the update to GitHub.
+    Format: {key: discord_user_id}
+    """
+    data, sha = await github_get_json(SOLD_KEYS_FILE)
+    if sha is None:
+        # File doesn't exist yet or fetch failed — try creating it fresh
+        data = {}
+        sha = None
 
+    data[key] = str(user_id)
 
-def save_sold_keys(data):
-    with open(SOLD_KEYS_FILE, "w") as f:
-        json.dump(data, f)
-
-
-sold_keys_data = load_sold_keys()
-
-
-def mark_key_sold(key: str, user_id: int):
-    sold_keys_data[key] = str(user_id)
-    save_sold_keys(sold_keys_data)
+    if sha:
+        await github_update_json(SOLD_KEYS_FILE, data, sha, f"Mark key sold: {key}")
+    else:
+        # Create the file for the first time
+        import base64
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+        }
+        content = base64.b64encode(json.dumps(data, indent=2).encode("utf-8")).decode("utf-8")
+        payload = {"message": f"Create sold_keys.json (mark {key} sold)", "content": content}
+        async with aiohttp.ClientSession() as session:
+            async with session.put(
+                github_api_url(SOLD_KEYS_FILE), headers=headers, json=payload, timeout=10
+            ) as resp:
+                text = await resp.text()
+                print(f"[GitHub create sold_keys] status={resp.status} body={text[:200]}")
 
 
 
@@ -132,23 +145,7 @@ def is_expired(purchase: dict) -> bool:
 
 
 
-WELCOME_FILE = "welcome_config.json"
 DEV_ID = 1077542254677344366
-
-
-def load_welcome_config():
-    if os.path.exists(WELCOME_FILE):
-        with open(WELCOME_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-
-def save_welcome_config(cfg):
-    with open(WELCOME_FILE, "w") as f:
-        json.dump(cfg, f)
-
-
-welcome_config = load_welcome_config()
 
 # ---------- DISCORD BOT SETUP ----------
 intents = discord.Intents.default()
@@ -277,56 +274,68 @@ async def panda_create_key(days):
     return False, "Not used — using local key pool instead"
 
 
-GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_KEYPOOL_REPO}/contents/{GITHUB_KEYPOOL_FILE}"
+def github_api_url(filename: str) -> str:
+    return f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_KEYPOOL_REPO}/contents/{filename}"
 
 
-async def github_get_keypool():
+async def github_get_json(filename: str):
     """
-    Fetch keypool.json from GitHub.
-    Expected format: {"3day": ["KEY1", "KEY2"], "15day": [...], "lifetime": [...]}
-    Returns (pool_dict, sha) where sha is needed to update the file later.
+    Fetch a JSON file from the zenith-keypool GitHub repo.
+    Returns (data_dict, sha) where sha is needed to update the file later.
+    On failure, returns (None, None) so callers can tell "empty" apart from "error".
     """
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
     }
+    url = github_api_url(filename)
     async with aiohttp.ClientSession() as session:
-        async with session.get(GITHUB_API_BASE, headers=headers, timeout=10) as resp:
+        async with session.get(url, headers=headers, timeout=10) as resp:
             if resp.status != 200:
                 text = await resp.text()
-                print(f"[GitHub get keypool] status={resp.status} body={text}")
-                return {}, None
+                print(f"[GitHub get {filename}] status={resp.status} body={text}")
+                return None, None
 
             body = await resp.json()
             sha = body["sha"]
             import base64
             content = base64.b64decode(body["content"]).decode("utf-8")
-            pool = json.loads(content)
-            return pool, sha
+            data = json.loads(content)
+            return data, sha
 
 
-async def github_update_keypool(pool: dict, sha: str):
+async def github_update_json(filename: str, data: dict, sha: str, message: str):
     """
-    Push the updated keypool.json back to GitHub, overwriting the old one.
+    Push updated JSON content back to GitHub, overwriting the old file.
     """
     import base64
-    new_content = base64.b64encode(json.dumps(pool, indent=2).encode("utf-8")).decode("utf-8")
+    new_content = base64.b64encode(json.dumps(data, indent=2).encode("utf-8")).decode("utf-8")
 
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
     }
     payload = {
-        "message": "Update keypool (key sold)",
+        "message": message,
         "content": new_content,
         "sha": sha,
     }
+    url = github_api_url(filename)
     async with aiohttp.ClientSession() as session:
-        async with session.put(GITHUB_API_BASE, headers=headers, json=payload, timeout=10) as resp:
+        async with session.put(url, headers=headers, json=payload, timeout=10) as resp:
             status = resp.status
             body = await resp.text()
-            print(f"[GitHub update keypool] status={status} body={body[:300]}")
+            print(f"[GitHub update {filename}] status={status} body={body[:300]}")
             return status == 200
+
+
+async def github_get_keypool():
+    pool, sha = await github_get_json(GITHUB_KEYPOOL_FILE)
+    return (pool or {}), sha
+
+
+async def github_update_keypool(pool: dict, sha: str):
+    return await github_update_json(GITHUB_KEYPOOL_FILE, pool, sha, "Update keypool (key sold)")
 
 
 async def get_key_from_pool(package_key: str):
@@ -372,7 +381,7 @@ class RedeemKeyModal(discord.ui.Modal, title="Redeem Your Key"):
         # Here we just record that this user redeemed this key.
         redeemed_data[str(interaction.user.id)] = key
         save_data(redeemed_data)
-        mark_key_sold(key, interaction.user.id)
+        await mark_key_sold(key, interaction.user.id)
 
         if self.then_send_script:
             await interaction.response.send_message(
@@ -440,7 +449,7 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
 
             # Record purchase + give Premium role
             record_purchase(interaction.user.id, self.package_key, key_result)
-            mark_key_sold(key_result, interaction.user.id)
+            await mark_key_sold(key_result, interaction.user.id)
             role_msg = ""
             premium_role = discord.utils.get(interaction.guild.roles, name=PREMIUM_ROLE_NAME)
             if premium_role:
@@ -721,35 +730,21 @@ async def testbuy(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="setwelcome", description="ตั้งค่าห้องสำหรับส่งข้อความต้อนรับสมาชิกใหม่")
-async def setwelcome(interaction: discord.Interaction):
-    if interaction.user.id != DEV_ID:
-        await interaction.response.send_message(
-            "You don't have permission to use this command.", ephemeral=True
-        )
-        return
-
-    welcome_config[str(interaction.guild.id)] = interaction.channel.id
-    save_welcome_config(welcome_config)
-
-    await interaction.response.send_message(
-        f"✅ ตั้งค่าแล้ว จะส่งข้อความต้อนรับสมาชิกใหม่ในห้องนี้ ({interaction.channel.mention})",
-        ephemeral=True,
-    )
+def find_welcome_channel(guild: discord.Guild):
+    """Find the welcome channel by matching the end of its name (ignores emoji prefix)."""
+    for ch in guild.text_channels:
+        if ch.name.lower().endswith(WELCOME_CHANNEL_NAME.lower()):
+            return ch
+    return None
 
 
 @bot.event
 async def on_member_join(member: discord.Member):
     print(f"[Welcome] on_member_join fired for {member} in guild {member.guild.id}")
 
-    channel_id = welcome_config.get(str(member.guild.id))
-    if not channel_id:
-        print(f"[Welcome] No welcome channel configured for guild {member.guild.id}")
-        return
-
-    channel = member.guild.get_channel(channel_id)
+    channel = find_welcome_channel(member.guild)
     if not channel:
-        print(f"[Welcome] Configured channel {channel_id} not found")
+        print(f"[Welcome] No channel matching '{WELCOME_CHANNEL_NAME}' found in {member.guild.name}")
         return
 
     embed = discord.Embed(
