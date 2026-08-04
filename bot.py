@@ -70,6 +70,31 @@ def save_purchases(data):
 
 purchases_data = load_purchases()
 
+# ---------- SOLD KEYS TRACKING ----------
+SOLD_KEYS_FILE = "sold_keys.json"
+
+
+def load_sold_keys():
+    if os.path.exists(SOLD_KEYS_FILE):
+        with open(SOLD_KEYS_FILE, "r") as f:
+            return json.load(f)
+    return {}  # {key: discord_user_id}
+
+
+def save_sold_keys(data):
+    with open(SOLD_KEYS_FILE, "w") as f:
+        json.dump(data, f)
+
+
+sold_keys_data = load_sold_keys()
+
+
+def mark_key_sold(key: str, user_id: int):
+    sold_keys_data[key] = str(user_id)
+    save_sold_keys(sold_keys_data)
+
+
+
 
 def record_purchase(user_id: int, package_key: str, key: str):
     """
@@ -84,12 +109,16 @@ def record_purchase(user_id: int, package_key: str, key: str):
     else:
         expires_at = None
 
+    existing = purchases_data.get(str(user_id), {})
+    purchase_count = existing.get("purchase_count", 0) + 1
+
     purchases_data[str(user_id)] = {
         "package": package_key,
         "package_label": pkg["label"],
         "key": key,
         "expires_at": expires_at,
         "purchased_at": datetime.datetime.utcnow().isoformat(),
+        "purchase_count": purchase_count,
     }
     save_purchases(purchases_data)
 
@@ -336,25 +365,25 @@ class RedeemKeyModal(discord.ui.Modal, title="Redeem Your Key"):
 
     async def on_submit(self, interaction: discord.Interaction):
         key = self.key_input.value.strip()
-        valid, data = await panda_validate_key(key)
 
-        if not valid:
-            await interaction.response.send_message(
-                f"❌ คีย์ไม่ถูกต้อง\n(debug: `{data}`)", ephemeral=True
-            )
-            return
-
-        # Save redeem record
+        # We no longer call Panda's API directly (no public endpoint for that).
+        # Panda validates the key for real when the script runs in-game (HWID lock etc).
+        # Here we just record that this user redeemed this key.
         redeemed_data[str(interaction.user.id)] = key
         save_data(redeemed_data)
+        mark_key_sold(key, interaction.user.id)
 
         if self.then_send_script:
             await interaction.response.send_message(
-                f"✅ Redeem สำเร็จ!\n\n📜 นี่คือสคริปต์ของคุณ:\n{SCRIPT_LINK}",
+                f"✅ Redeem สำเร็จ!\n\n📜 นี่คือสคริปต์ของคุณ:\n{SCRIPT_LINK}\n\n"
+                f"⚠️ คีย์นี้จะถูกตรวจสอบจริงตอนรันสคริปต์ในเกม",
                 ephemeral=True,
             )
         else:
-            await interaction.response.send_message("✅ Redeem สำเร็จ", ephemeral=True)
+            await interaction.response.send_message(
+                "✅ Redeem สำเร็จ\n\n⚠️ คีย์นี้จะถูกตรวจสอบจริงตอนรันสคริปต์ในเกม",
+                ephemeral=True,
+            )
 
 
 class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
@@ -483,19 +512,12 @@ class PanelView(discord.ui.View):
         existing_key = redeemed_data.get(user_id)
 
         if existing_key:
-            # Re-validate in case it was revoked
-            valid, data = await panda_validate_key(existing_key)
-            if valid:
-                await interaction.response.send_message(
-                    f"📜 นี่คือสคริปต์ของคุณ:\n{SCRIPT_LINK}", ephemeral=True
-                )
-                return
-            else:
-                # stored key no longer valid, remove it
-                redeemed_data.pop(user_id, None)
-                save_data(redeemed_data)
+            await interaction.response.send_message(
+                f"📜 นี่คือสคริปต์ของคุณ:\n{SCRIPT_LINK}", ephemeral=True
+            )
+            return
 
-        # No valid key on file — open modal to enter one now
+        # No key on file — open modal to enter one now
         await interaction.response.send_modal(RedeemKeyModal(then_send_script=True))
 
     @discord.ui.button(label="🔄 Reset HWID", style=discord.ButtonStyle.secondary, custom_id="panel_resethwid")
@@ -512,6 +534,11 @@ class PanelView(discord.ui.View):
         for p in PACKAGES.values():
             embed.add_field(name=p["label"], value=f"{p['price']} บาท", inline=True)
         await interaction.response.send_message(embed=embed, view=BuyPackageView(), ephemeral=True)
+
+    @discord.ui.button(label="📊 ดูสถานะ", style=discord.ButtonStyle.secondary, custom_id="panel_status", row=1)
+    async def view_status(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = await build_status_embed(interaction.user)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ---------- SLASH COMMANDS ----------
@@ -636,38 +663,53 @@ async def on_member_join(member: discord.Member):
         print(f"[Welcome] failed to send: {e}")
 
 
-@bot.tree.command(name="status", description="ดูสถานะของคุณ (คีย์, วันหมดอายุ, ยศ Premium)")
-async def status(interaction: discord.Interaction):
-    purchase = purchases_data.get(str(interaction.user.id))
+async def build_status_embed(member: discord.Member) -> discord.Embed:
+    purchase = purchases_data.get(str(member.id))
 
     embed = discord.Embed(title="📊 สถานะของคุณ", color=discord.Color.from_str("#C0C0C0"))
-    embed.add_field(name="ชื่อผู้ใช้", value=interaction.user.mention, inline=False)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="ชื่อผู้ใช้", value=member.mention, inline=False)
+
+    premium_role = discord.utils.get(member.guild.roles, name=PREMIUM_ROLE_NAME)
+    has_premium = premium_role in member.roles if premium_role else False
+    embed.add_field(name="ยศ", value="💎 Premium" if has_premium else "ไม่มี", inline=True)
+
+    joined_at = member.joined_at
+    if joined_at:
+        days_in_server = (datetime.datetime.now(datetime.timezone.utc) - joined_at).days
+        embed.add_field(
+            name="เข้าเซิร์ฟเวอร์เมื่อ",
+            value=f"{joined_at.strftime('%Y-%m-%d')} ({days_in_server} วันที่แล้ว)",
+            inline=True,
+        )
 
     if not purchase:
-        embed.add_field(name="คีย์", value="ยังไม่มีการซื้อคีย์", inline=False)
-        embed.add_field(name="สถานะ Premium", value="❌ ไม่มี", inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        return
+        embed.add_field(name="Key / วันหมดอายุ / จำนวนที่เติม", value="ยังไม่มีการซื้อคีย์", inline=False)
+        return embed
 
     expired = is_expired(purchase)
     if purchase["expires_at"] is None:
-        expire_text = "ถาวร (ไม่มีวันหมดอายุ)"
+        expire_text = "ถาวร"
     else:
         expire_dt = datetime.datetime.fromisoformat(purchase["expires_at"])
         expire_text = expire_dt.strftime("%Y-%m-%d %H:%M UTC")
         if expired:
             expire_text += " (หมดอายุแล้ว)"
 
-    embed.add_field(name="แพ็คเกจ", value=purchase["package_label"], inline=True)
-    embed.add_field(name="คีย์", value=f"`{purchase['key']}`", inline=True)
-    embed.add_field(name="วันหมดอายุ", value=expire_text, inline=False)
     embed.add_field(
-        name="สถานะ Premium",
-        value="✅ Active" if not expired else "❌ หมดอายุแล้ว",
+        name="Key / วันหมดอายุ / จำนวนที่เติม",
+        value=(
+            f"🔑 `{purchase['key']}`\n"
+            f"📦 แพ็คเกจ: {purchase['package_label']}\n"
+            f"⏰ หมดอายุ: {expire_text}\n"
+            f"🔁 เติมแล้ว: {purchase.get('purchase_count', 1)} ครั้ง"
+        ),
         inline=False,
     )
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    return embed
+
+
 
 
 @tasks.loop(hours=24)
