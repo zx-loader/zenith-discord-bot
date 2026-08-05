@@ -349,6 +349,14 @@ async def github_update_keypool(pool: dict, sha: str):
     return await github_update_json(GITHUB_KEYPOOL_FILE, pool, sha, "Update keypool (key sold)")
 
 
+async def get_stock_counts() -> dict:
+    """Returns {package_key: count} for all packages, e.g. {"3day": 2, "15day": 0, "lifetime": 1}"""
+    pool, sha = await github_get_keypool()
+    if sha is None:
+        return {k: 0 for k in PACKAGES}
+    return {k: len(pool.get(k, [])) for k in PACKAGES}
+
+
 async def get_key_from_pool(package_key: str):
     """
     Pop one key from the GitHub-hosted pool for this package.
@@ -494,30 +502,41 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
 
 
 class BuyPackageSelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(
-                label=f"{p['label']} — {p['price']} บาท",
-                description=f"รับคีย์ใช้งาน {p['label']}",
-                emoji="🔑",
-                value=key,
+    def __init__(self, stock: dict):
+        options = []
+        for key, p in PACKAGES.items():
+            count = stock.get(key, 0)
+            stock_text = f"เหลือ {count}" if count > 0 else "หมด"
+            options.append(
+                discord.SelectOption(
+                    label=f"{p['label']} — {p['price']} บาท ({stock_text})",
+                    description=f"รับคีย์ใช้งาน {p['label']}",
+                    emoji="🔑" if count > 0 else "❌",
+                    value=key,
+                )
             )
-            for key, p in PACKAGES.items()
-        ]
         super().__init__(
             placeholder="เลือกแพ็คเกจที่ต้องการซื้อ...",
             options=options,
             custom_id="buy_package_select",
         )
+        self.stock = stock
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(BuyKeyModal(self.values[0]))
+        chosen = self.values[0]
+        if self.stock.get(chosen, 0) <= 0:
+            await interaction.response.send_message(
+                f"❌ แพ็คเกจ {PACKAGES[chosen]['label']} หมดสต๊อกแล้ว กรุณาเลือกแพ็คเกจอื่นหรือรอแอดมินเติม",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(BuyKeyModal(chosen))
 
 
 class BuyPackageView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, stock: dict):
         super().__init__(timeout=120)
-        self.add_item(BuyPackageSelect())
+        self.add_item(BuyPackageSelect(stock))
 
 
 class TestBuyPackageSelect(discord.ui.Select):
@@ -595,14 +614,20 @@ class PanelView(discord.ui.View):
 
     @discord.ui.button(label="💎 ซื้อ Key", style=discord.ButtonStyle.danger, custom_id="panel_buykey", row=1)
     async def buy_key(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        stock = await get_stock_counts()
+
         embed = discord.Embed(
             title="💎 ซื้อ Key — Zenith Soul HUB",
             description="เลือกแพ็คเกจที่ต้องการจากเมนูด้านล่าง แล้วเตรียมลิงก์ซองอั่งเปา TrueMoney ให้พร้อม",
             color=discord.Color.gold(),
         )
-        for p in PACKAGES.values():
-            embed.add_field(name=p["label"], value=f"{p['price']} บาท", inline=True)
-        await interaction.response.send_message(embed=embed, view=BuyPackageView(), ephemeral=True)
+        for key, p in PACKAGES.items():
+            count = stock.get(key, 0)
+            stock_text = f"เหลือ {count}" if count > 0 else "❌ หมด"
+            embed.add_field(name=p["label"], value=f"{p['price']} บาท ({stock_text})", inline=True)
+
+        await interaction.followup.send(embed=embed, view=BuyPackageView(stock), ephemeral=True)
 
     @discord.ui.button(label="📊 ดูสถานะ", style=discord.ButtonStyle.secondary, custom_id="panel_status", row=1)
     async def view_status(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -660,6 +685,28 @@ async def ensure_panel_posted():
             print(f"[AutoPanel] Posted new panel in #{channel.name}")
         except Exception as e:
             print(f"[AutoPanel] Failed to post panel: {e}")
+
+
+@bot.tree.command(name="showpanel", description="[Admin only] สั่งให้ panel ขึ้นในห้อง premium ทันที ไม่ต้องรอ restart บอท")
+async def showpanel(interaction: discord.Interaction):
+    if interaction.user.id not in ADMIN_IDS:
+        await interaction.response.send_message(
+            "You don't have permission to use this command.", ephemeral=True
+        )
+        return
+
+    channel = discord.utils.get(interaction.guild.text_channels, name=AUTO_PANEL_CHANNEL_NAME)
+    if not channel:
+        await interaction.response.send_message(
+            f"❌ ไม่พบห้องชื่อ '{AUTO_PANEL_CHANNEL_NAME}' ในเซิร์ฟเวอร์", ephemeral=True
+        )
+        return
+
+    embed = build_panel_embed()
+    await channel.send(embed=embed, view=PanelView())
+    await interaction.response.send_message(
+        f"✅ ส่ง panel ไปที่ {channel.mention} แล้ว", ephemeral=True
+    )
 
 
 @bot.tree.command(name="panel", description="Show the Zenith Soul HUB key panel")
