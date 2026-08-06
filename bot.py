@@ -664,7 +664,7 @@ async def ensure_panel_posted():
     it (buttons are already persistent via add_view). If not, post a fresh one.
     """
     for guild in bot.guilds:
-        channel = discord.utils.get(guild.text_channels, name=AUTO_PANEL_CHANNEL_NAME)
+        channel = find_premium_channel(guild)
         if not channel:
             print(f"[AutoPanel] No channel named '{AUTO_PANEL_CHANNEL_NAME}' in {guild.name}")
             continue
@@ -695,7 +695,7 @@ async def showpanel(interaction: discord.Interaction):
         )
         return
 
-    channel = discord.utils.get(interaction.guild.text_channels, name=AUTO_PANEL_CHANNEL_NAME)
+    channel = find_premium_channel(interaction.guild)
     if not channel:
         await interaction.response.send_message(
             f"❌ ไม่พบห้องชื่อ '{AUTO_PANEL_CHANNEL_NAME}' ในเซิร์ฟเวอร์", ephemeral=True
@@ -805,6 +805,14 @@ async def test_member_join(interaction: discord.Interaction):
     )
 
 
+def find_premium_channel(guild: discord.Guild):
+    """Find the premium/panel channel by matching the end of its name (ignores emoji prefix)."""
+    for ch in guild.text_channels:
+        if ch.name.lower().endswith(AUTO_PANEL_CHANNEL_NAME.lower()):
+            return ch
+    return None
+
+
 def find_welcome_channel(guild: discord.Guild):
     """Find the welcome channel by matching the end of its name (ignores emoji prefix)."""
     for ch in guild.text_channels:
@@ -824,7 +832,7 @@ async def on_member_join(member: discord.Member):
 
     embed = discord.Embed(
         title="👋 Welcome to Zenith Hub",
-        description=f"ยินดีต้อนรับ {member.mention} เข้าสู่ Zenith Soul HUB!",
+        description=f"ยินดีต้อนรับ **{member.display_name}** ({member.mention}) เข้าสู่ Zenith Soul HUB!",
         color=discord.Color.blurple(),
     )
     embed.set_thumbnail(url=member.display_avatar.url)
