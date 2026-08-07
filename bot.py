@@ -832,7 +832,7 @@ async def on_member_join(member: discord.Member):
 
     embed = discord.Embed(
         title="👋 Welcome to Zenith Hub",
-        description=f"ยินดีต้อนรับ **{member.display_name}** ({member.mention}) เข้าสู่ Zenith Soul HUB!",
+        description=f"ยินดีต้อนรับ **{member.display_name}** เข้าสู่ Zenith Soul HUB!",
         color=discord.Color.blurple(),
     )
     embed.set_thumbnail(url=member.display_avatar.url)
