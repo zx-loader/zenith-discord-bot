@@ -457,7 +457,7 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
 
                 if not success:
                     await interaction.followup.send(
-                        "❌ รับซองไม่สำเร็จ โปรดตรวจสอบซองของท่านและลองใหม่อีกครั้ง",
+                        "ตรวจสอบซองไม่พบยอดเงิน ลองเช็คลิงก์อีกครั้งแล้วส่งใหม่ได้เลยครับ",
                         ephemeral=True,
                     )
                     return
@@ -465,8 +465,8 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
                 amount = result  # baht received
                 if amount < pkg["price"]:
                     await interaction.followup.send(
-                        "❌ รับซองไม่สำเร็จ โปรดตรวจสอบซองของท่านและลองใหม่อีกครั้ง\n"
-                        f"⚠️ ระบบรับเงินเข้าร้านแล้ว ({amount:.2f} บาท) กรุณาติดต่อแอดมินเพื่อขอเงินคืนส่วนต่างหรือรับคีย์แบบสั้นลง",
+                        f"ยอดในซองไม่ครบราคาแพ็คเกจ (ได้รับ {amount:.2f} บาท) "
+                        f"ทักแอดมินพร้อมแจ้งยอดนี้ เดี๋ยวจัดการให้ครับ",
                         ephemeral=True,
                     )
                     return
@@ -474,8 +474,8 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
             key_result = await get_key_from_pool(self.package_key)
             if not key_result:
                 await interaction.followup.send(
-                    f"⚠️ รับเงินสำเร็จ ({amount:.2f} บาท) แต่ตอนนี้คีย์แพ็คเกจ {pkg['label']} หมดคลังชั่วคราว\n"
-                    f"กรุณาติดต่อแอดมินพร้อมแจ้งยอดนี้เพื่อรับคีย์",
+                    f"รับเงินเรียบร้อย ({amount:.2f} บาท) แต่คีย์แพ็คเกจ {pkg['label']} หมดสต๊อกพอดี\n"
+                    f"ทักแอดมินพร้อมแจ้งยอดนี้ได้เลยครับ จะจัดคีย์ให้",
                     ephemeral=True,
                 )
                 return
@@ -488,29 +488,29 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
             if premium_role:
                 try:
                     await interaction.user.add_roles(premium_role, reason="Purchased key")
-                    role_msg = f"\n🎖️ ได้รับยศ **{PREMIUM_ROLE_NAME}** แล้ว!"
+                    role_msg = f"\nได้รับยศ **{PREMIUM_ROLE_NAME}** แล้วครับ"
                 except Exception as e:
                     print(f"[Role assign] failed: {e}")
-                    role_msg = "\n⚠️ ให้ยศ Premium ไม่สำเร็จ (บอทอาจไม่มีสิทธิ์จัดการ role นี้)"
+                    role_msg = "\nให้ยศ Premium ไม่สำเร็จ ทักแอดมินให้เพิ่มให้หน่อยครับ"
             else:
-                role_msg = f"\n⚠️ ไม่พบ role ชื่อ '{PREMIUM_ROLE_NAME}' ในเซิร์ฟเวอร์"
+                role_msg = f"\nไม่พบยศ '{PREMIUM_ROLE_NAME}' ในเซิร์ฟเวอร์ ทักแอดมินได้เลยครับ"
 
             purchased_at = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-            test_tag = "\n🧪 (โหมดทดสอบ ไม่มีการตัดเงินจริง)" if self.skip_payment else ""
+            test_tag = "\n(โหมดทดสอบ ไม่มีการตัดเงินจริง)" if self.skip_payment else ""
 
             await interaction.followup.send(
-                f"✅ สำเร็จเรียบร้อย\n\n"
+                f"ซื้อสำเร็จครับ 🎉\n\n"
                 f"🔑 คีย์: `{key_result}`\n"
                 f"🕒 เวลาที่ซื้อ: {purchased_at}\n"
                 f"📦 แพ็คเกจ: {pkg['label']}\n\n"
-                f"ใช้ปุ่ม Redeem Key เพื่อผูกคีย์นี้กับเครื่องของคุณ"
+                f"กดปุ่ม Redeem Key เพื่อผูกคีย์กับเครื่องของคุณได้เลยครับ"
                 f"{role_msg}{test_tag}",
                 ephemeral=True,
             )
         except Exception as e:
             print(f"[BuyKeyModal] UNEXPECTED ERROR: {e}")
             await interaction.followup.send(
-                f"❌ เกิดข้อผิดพลาดไม่คาดคิด กรุณาติดต่อแอดมิน\n(debug: `{e}`)",
+                f"เกิดข้อผิดพลาดระหว่างดำเนินการ ทักแอดมินได้เลยครับ\n(debug: `{e}`)",
                 ephemeral=True,
             )
 
@@ -540,7 +540,7 @@ class BuyPackageSelect(discord.ui.Select):
         chosen = self.values[0]
         if self.stock.get(chosen, 0) <= 0:
             await interaction.response.send_message(
-                f"❌ แพ็คเกจ {PACKAGES[chosen]['label']} หมดสต๊อกแล้ว กรุณาเลือกแพ็คเกจอื่นหรือรอแอดมินเติม",
+                f"แพ็คเกจ {PACKAGES[chosen]['label']} หมดสต๊อกพอดีครับ รอแอดมินเติมสต๊อกอีกนิดนะครับ",
                 ephemeral=True,
             )
             return
@@ -632,8 +632,8 @@ class PanelView(discord.ui.View):
         stock = await get_stock_counts()
 
         embed = discord.Embed(
-            title="📌 Buy Zentih - Script",
-            description="เลือกซื้อเมนูด้านล่าง แล้วเตรียมลิงก์ซองอั่งเปา TrueMoney ให้พร้อม\n\n⚠️ ทางเราไม่รับธนาคาร สาเหตุ บอทเราทางเรารับไม่ได้",
+            title="🔑 Zenith Script — Shop",
+            description="เลือกแพ็คเกจที่ต้องการจากเมนูด้านล่าง แล้วเตรียมลิงก์ซองอั่งเปา TrueMoney ให้พร้อมนะครับ\n\nรับชำระผ่านซองอั่งเปาเท่านั้น (ยังไม่รองรับโอนผ่านธนาคาร)",
             color=discord.Color.gold(),
         )
         for key, p in PACKAGES.items():
