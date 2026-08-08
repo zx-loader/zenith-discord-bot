@@ -18,9 +18,7 @@ GITHUB_KEYPOOL_FILE = "keypool.json"
 
 # Packages: label -> (days, price in baht). days=None means permanent/lifetime.
 PACKAGES = {
-    "3day": {"label": "3 วัน", "days": 3, "price": 10},
-    "15day": {"label": "15 วัน", "days": 15, "price": 25},
-    "lifetime": {"label": "ถาวร", "days": None, "price": 40},
+    "lifetime": {"label": "ถาวร", "days": None, "price": 149},
 }
 
 # Allowed admins for /panel and /editpanel
@@ -350,7 +348,7 @@ async def github_update_keypool(pool: dict, sha: str):
 
 
 async def get_stock_counts() -> dict:
-    """Returns {package_key: count} for all packages, e.g. {"3day": 2, "15day": 0, "lifetime": 1}"""
+    """Returns {package_key: count} for all packages, e.g. {"lifetime": 5}"""
     pool, sha = await github_get_keypool()
     if sha is None:
         return {k: 0 for k in PACKAGES}
@@ -745,8 +743,6 @@ async def editpanel(interaction: discord.Interaction, text: str, image_url: str 
 @bot.tree.command(name="testkeypool", description="[Admin only] Test pulling a key from the pool, skipping payment")
 @app_commands.describe(package="Which package to test")
 @app_commands.choices(package=[
-    app_commands.Choice(name="3 วัน", value="3day"),
-    app_commands.Choice(name="15 วัน", value="15day"),
     app_commands.Choice(name="ถาวร", value="lifetime"),
 ])
 async def testkeypool(interaction: discord.Interaction, package: app_commands.Choice[str]):
