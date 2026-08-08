@@ -81,7 +81,6 @@ async def mark_key_sold(key: str, user_id: int):
     """
     data, sha = await github_get_json(SOLD_KEYS_FILE)
     if sha is None:
-        # File doesn't exist yet or fetch failed — try creating it fresh
         data = {}
         sha = None
 
@@ -90,7 +89,6 @@ async def mark_key_sold(key: str, user_id: int):
     if sha:
         await github_update_json(SOLD_KEYS_FILE, data, sha, f"Mark key sold: {key}")
     else:
-        # Create the file for the first time
         import base64
         headers = {
             "Authorization": f"Bearer {GITHUB_TOKEN}",
@@ -104,8 +102,6 @@ async def mark_key_sold(key: str, user_id: int):
             ) as resp:
                 text = await resp.text()
                 print(f"[GitHub create sold_keys] status={resp.status} body={text[:200]}")
-
-
 
 
 def record_purchase(user_id: int, package_key: str, key: str):
@@ -142,7 +138,6 @@ def is_expired(purchase: dict) -> bool:
     return datetime.datetime.utcnow() > expires_at
 
 
-
 DEV_ID = 1077542254677344366
 
 # ---------- DISCORD BOT SETUP ----------
@@ -153,10 +148,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------- PANDA AUTH API HELPERS ----------
 async def panda_validate_key(key: str):
-    """
-    Check if a key is valid/active for our service.
-    Returns (True, data) if valid, (False, error_message) if not.
-    """
     url = "https://api.pandauth.com/v2/keys/validate"
     headers = {
         "Authorization": f"Bearer {PANDA_API_KEY}",
@@ -185,10 +176,6 @@ async def panda_validate_key(key: str):
 
 
 async def panda_reset_hwid(key: str):
-    """
-    Ask Panda to reset the HWID lock for a given key.
-    Returns (True, data) on success, (False, error_message) on failure.
-    """
     url = "https://api.pandauth.com/v2/keys/reset-hwid"
     headers = {
         "Authorization": f"Bearer {PANDA_API_KEY}",
@@ -217,11 +204,6 @@ async def panda_reset_hwid(key: str):
 
 
 async def redeem_truemoney_voucher(voucher_url_or_code: str):
-    """
-    Redeem a TrueMoney angpao voucher into our shop's wallet.
-    Returns (True, amount_baht) on success, (False, error_message) on failure.
-    """
-    # Extract voucher hash if a full URL was given
     code = voucher_url_or_code.strip()
     if "v=" in code:
         code = code.split("v=")[-1].split("&")[0]
@@ -264,24 +246,11 @@ async def redeem_truemoney_voucher(voucher_url_or_code: str):
             return False, str(e)
 
 
-async def panda_create_key(days):
-    """
-    DEPRECATED — Panda doesn't expose a public API for this.
-    Kept as a no-op fallback, not used anymore.
-    """
-    return False, "Not used — using local key pool instead"
-
-
 def github_api_url(filename: str) -> str:
     return f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_KEYPOOL_REPO}/contents/{filename}"
 
 
 async def github_get_json(filename: str):
-    """
-    Fetch a JSON file from the zenith-keypool GitHub repo.
-    Returns (data_dict, sha) where sha is needed to update the file later.
-    On failure, returns (None, None) so callers can tell "empty" apart from "error".
-    """
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
@@ -300,7 +269,6 @@ async def github_get_json(filename: str):
             content = base64.b64decode(body["content"]).decode("utf-8").strip()
 
             if not content:
-                # File exists but is empty (0 bytes) — treat as empty dict
                 print(f"[GitHub get {filename}] file is empty, treating as {{}}")
                 return {}, sha
 
@@ -314,9 +282,6 @@ async def github_get_json(filename: str):
 
 
 async def github_update_json(filename: str, data: dict, sha: str, message: str):
-    """
-    Push updated JSON content back to GitHub, overwriting the old file.
-    """
     import base64
     new_content = base64.b64encode(json.dumps(data, indent=2).encode("utf-8")).decode("utf-8")
 
@@ -348,7 +313,6 @@ async def github_update_keypool(pool: dict, sha: str):
 
 
 async def get_stock_counts() -> dict:
-    """Returns {package_key: count} for all packages, e.g. {"lifetime": 5}"""
     pool, sha = await github_get_keypool()
     if sha is None:
         return {k: 0 for k in PACKAGES}
@@ -356,10 +320,6 @@ async def get_stock_counts() -> dict:
 
 
 async def get_key_from_pool(package_key: str):
-    """
-    Pop one key from the GitHub-hosted pool for this package.
-    Returns the key string, or None if pool is empty / on error.
-    """
     pool, sha = await github_get_keypool()
     if sha is None:
         return None
@@ -393,9 +353,6 @@ class RedeemKeyModal(discord.ui.Modal, title="Redeem Your Key"):
     async def on_submit(self, interaction: discord.Interaction):
         key = self.key_input.value.strip()
 
-        # We no longer call Panda's API directly (no public endpoint for that).
-        # Panda validates the key for real when the script runs in-game (HWID lock etc).
-        # Here we just record that this user redeemed this key.
         redeemed_data[str(interaction.user.id)] = key
         save_data(redeemed_data)
         await mark_key_sold(key, interaction.user.id)
@@ -434,7 +391,7 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
 
         try:
             if self.skip_payment:
-                amount = pkg["price"]  # pretend full payment was received
+                amount = pkg["price"]
             else:
                 voucher = self.voucher_input.value.strip()
                 success, result = await redeem_truemoney_voucher(voucher)
@@ -446,7 +403,7 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
                     )
                     return
 
-                amount = result  # baht received
+                amount = result
                 if amount < pkg["price"]:
                     await interaction.followup.send(
                         "❌ รับซองไม่สำเร็จ โปรดตรวจสอบซองของท่านและลองใหม่อีกครั้ง\n"
@@ -464,7 +421,6 @@ class BuyKeyModal(discord.ui.Modal, title="ซื้อ Key"):
                 )
                 return
 
-            # Record purchase + give Premium role
             record_purchase(interaction.user.id, self.package_key, key_result)
             await mark_key_sold(key_result, interaction.user.id)
             role_msg = ""
@@ -583,6 +539,63 @@ class ResetHWIDModal(discord.ui.Modal, title="Reset HWID"):
             )
 
 
+# ---------- STATUS DETAILS VIEW (ดูรายละเอียดสถานะเพิ่มเติม) ----------
+class StatusDetailsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.button(
+        label="📋 ดูรายละเอียดเพิ่มเติม",
+        style=discord.ButtonStyle.primary,
+        custom_id="status_show_details"
+    )
+    async def show_details(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="🔍 รายละเอียดการทำงาน — Zenith Script",
+            description="ข้อมูลสคริปต์ ฟังก์ชั่น และคำถามที่พบบ่อยจากทางค่าย Zenith",
+            color=discord.Color.blue(),
+        )
+
+        embed.add_field(
+            name="⚡ ฟังก์ชั่นสคริปต์หลัก",
+            value=(
+                "• **Remote Spy** ทางค่ายเฉพาะ\n"
+                "• **ขโมยข้อมูลเกม** (Game Data Extraction) ทั้งหมดเพื่อนำไปพัฒนาต่อ\n"
+                "• ฟังก์ชั่นเสริมอื่นๆ ภายในตัว HUB"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="📁 การเตรียมการก่อนใช้งาน",
+            value="⚠️ **สำคัญ:** กรุณาสร้าง Folder ชื่อ `Zenith` ใน Folder ของตัวรัน (Executor) ของคุณก่อนใช้งานสคริปต์",
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🤖 การโยนข้อมูลให้ AI ทำงานต่อ",
+            value=(
+                "สคริปต์นี้จะขโมยข้อมูลเกมทั้งหมด ซึ่งสามารถโยนให้ AI ทำต่อได้\n"
+                "**AI ที่ทางค่ายแนะนำ:** Kimi, Gemini, Claude, AI Studio\n"
+                "💡 *แนะนำ Kimi / Claude (ต้องใช้ทักษะในการสื่อสาร/Prompting ในการคุย)*"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="❓ คำถามที่พบบ่อย (FAQ)",
+            value=(
+                "• **มีทีมงานซัพพอร์ตไหม?** -> มีครับ (แต่ไม่ได้สแตนด์บายตลอดเวลา)\n"
+                "• **มีช่องสอนใช้งานไหม?** -> มีช่องเฉพาะสำหรับลูกค้าอัปเดตและพร้อมสอนใช้งาน\n"
+                "• **มีวิดีโอแนะนำไหม?** -> ก่อนซื้อทางค่ายมีวิดีโอแนะนำขั้นตอนการทำงานให้ชม"
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="ขอบคุณที่ไว้วางใจใช้บริการ Zenith Soul HUB")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 # ---------- PANEL VIEW (buttons) ----------
 class PanelView(discord.ui.View):
     def __init__(self):
@@ -603,7 +616,6 @@ class PanelView(discord.ui.View):
             )
             return
 
-        # No key on file — open modal to enter one now
         await interaction.response.send_modal(RedeemKeyModal(then_send_script=True))
 
     @discord.ui.button(label="🔄 Reset HWID", style=discord.ButtonStyle.secondary, custom_id="panel_resethwid")
@@ -616,8 +628,11 @@ class PanelView(discord.ui.View):
         stock = await get_stock_counts()
 
         embed = discord.Embed(
-            title="💎 ซื้อ Key — Zenith Soul HUB",
-            description="เลือกแพ็คเกจที่ต้องการจากเมนูด้านล่าง แล้วเตรียมลิงก์ซองอั่งเปา TrueMoney ให้พร้อม",
+            title="📌 Buy Zenith - Script",
+            description=(
+                "เลือกซื้อเมนูด้านล่าง แล้วเตรียมลิงก์ซองอั่งเปา TrueMoney ให้พร้อม\n\n"
+                "⚠️ **หมายเหตุ:** ทางเราไม่รับธนาคาร สาเหตุ บอทเข้าทางเรา รับไม่ได้"
+            ),
             color=discord.Color.gold(),
         )
         for key, p in PACKAGES.items():
@@ -630,7 +645,8 @@ class PanelView(discord.ui.View):
     @discord.ui.button(label="📊 ดูสถานะ", style=discord.ButtonStyle.secondary, custom_id="panel_status", row=1)
     async def view_status(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = await build_status_embed(interaction.user)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # ส่ง Embed สถานะพร้อมปุ่มสำหรับกด "ดูรายละเอียดเพิ่มเติม" ต่อได้
+        await interaction.response.send_message(embed=embed, view=StatusDetailsView(), ephemeral=True)
 
 
 # ---------- SLASH COMMANDS ----------
@@ -656,11 +672,6 @@ def build_panel_embed() -> discord.Embed:
 
 
 async def ensure_panel_posted():
-    """
-    Runs on bot startup. Looks for a channel named AUTO_PANEL_CHANNEL_NAME in every
-    guild the bot is in. If the bot's own panel message already exists there, leave
-    it (buttons are already persistent via add_view). If not, post a fresh one.
-    """
     for guild in bot.guilds:
         channel = find_premium_channel(guild)
         if not channel:
@@ -711,8 +722,6 @@ async def showpanel(interaction: discord.Interaction):
 @is_admin()
 async def panel(interaction: discord.Interaction):
     embed = build_panel_embed()
-    # NOTE: if you don't have a local banner file, remove set_image line above
-    # and instead use embed.set_image(url="<your image URL>")
     await interaction.response.send_message(embed=embed, view=PanelView())
 
 
@@ -724,7 +733,6 @@ async def editpanel(interaction: discord.Interaction, text: str, image_url: str 
     if image_url:
         embed.set_image(url=image_url)
 
-    # Find the most recent panel message from this bot in the channel and edit it
     found = False
     async for msg in interaction.channel.history(limit=50):
         if msg.author.id == bot.user.id and msg.components:
@@ -792,7 +800,6 @@ async def test_member_join(interaction: discord.Interaction):
         )
         return
 
-    # Simulate on_member_join using the admin's own member object
     await on_member_join(interaction.user)
 
     await interaction.response.send_message(
@@ -802,7 +809,6 @@ async def test_member_join(interaction: discord.Interaction):
 
 
 def find_premium_channel(guild: discord.Guild):
-    """Find the premium/panel channel by matching the end of its name (ignores emoji prefix)."""
     for ch in guild.text_channels:
         if ch.name.lower().endswith(AUTO_PANEL_CHANNEL_NAME.lower()):
             return ch
@@ -810,7 +816,6 @@ def find_premium_channel(guild: discord.Guild):
 
 
 def find_welcome_channel(guild: discord.Guild):
-    """Find the welcome channel by matching the end of its name (ignores emoji prefix)."""
     for ch in guild.text_channels:
         if ch.name.lower().endswith(WELCOME_CHANNEL_NAME.lower()):
             return ch
@@ -841,7 +846,7 @@ async def on_member_join(member: discord.Member):
         print(f"[Welcome] failed to send: {e}")
 
 
-async def build_status_embed(member: discord.Member) -> discord.Embed:
+async build_status_embed(member: discord.Member) -> discord.Embed:
     purchase = purchases_data.get(str(member.id))
 
     embed = discord.Embed(title="📊 สถานะของคุณ", color=discord.Color.from_str("#C0C0C0"))
@@ -886,8 +891,6 @@ async def build_status_embed(member: discord.Member) -> discord.Embed:
     )
 
     return embed
-
-
 
 
 @tasks.loop(hours=24)
